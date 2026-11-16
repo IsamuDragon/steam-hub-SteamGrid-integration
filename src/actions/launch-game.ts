@@ -1,3 +1,4 @@
+// src/actions/launch-game.ts
 import streamDeck, {
   action,
   type DialAction,
@@ -10,7 +11,7 @@ import streamDeck, {
   type WillDisappearEvent,
 } from "@elgato/streamdeck";
 
-import { type ArtFit, type ArtStyle, clearRenderCache, renderCaption, renderKeyImage } from "../steam/artwork";
+import { type ArtFit, type ArtSource, type ArtStyle, clearRenderCache, renderCaption, renderKeyImage } from "../steam/artwork";
 import { launchGame } from "../steam/launch";
 import { findGame, getDownloadFraction, getInstalledGames, groupForPicker } from "../steam/library";
 import { addClockListener, addStatusListener, removeClockListener, removeStatusListener } from "../steam/monitor";
@@ -35,11 +36,17 @@ type LaunchGameSettings = {
   /** Cached display name, so the key still labels itself when Steam is unavailable. */
   gameName?: string;
 
+  /** Art source selector ("official" or "steamgriddb"). */
+  artSource?: ArtSource;
+
   /** Which piece of store art to draw on the key. */
   artStyle?: ArtStyle;
 
   /** How that art is fitted into the key. */
   artFit?: ArtFit;
+
+  /** SteamGridDB API key. */
+  sgdbApiKey?: string;
 
   /** Whether the game's name is drawn over the art. */
   showTitle?: boolean;
@@ -67,6 +74,7 @@ type InspectorMessage = {
   isRefresh?: boolean;
 };
 
+const DEFAULT_SOURCE: ArtSource = "official";
 const DEFAULT_STYLE: ArtStyle = "logo";
 const DEFAULT_FIT: ArtFit = "fill";
 
@@ -258,8 +266,6 @@ export class LaunchGame extends SingletonAction<LaunchGameSettings> {
 
     if (appId === undefined) {
       this.#drawn.delete(target.id);
-      // The action's own icon from the manifest, with the prompt drawn on it. The title is left alone,
-      // it may be the user's own.
       await paintKey(target, undefined, "Choose game", "launch", { clearTitle: settings.titleIsOurs === true });
       if (settings.titleIsOurs === true) {
         await target.setSettings({ ...settings, titleIsOurs: false });
@@ -267,8 +273,6 @@ export class LaunchGame extends SingletonAction<LaunchGameSettings> {
       return;
     }
 
-    // Remember the name so a key keeps labelling itself if the game is later uninstalled, and,
-    // for a hand-typed id, so it has something to show at all.
     const name = (await findGame(appId))?.name ?? settings.gameName;
     const updated: LaunchGameSettings = { ...settings };
 
@@ -276,50 +280,16 @@ export class LaunchGame extends SingletonAction<LaunchGameSettings> {
       updated.gameName = name;
     }
 
+    const artSource = settings.artSource ?? DEFAULT_SOURCE;
     const style = settings.artStyle ?? DEFAULT_STYLE;
     const fit = settings.artFit ?? DEFAULT_FIT;
     const badge = badgeFor(settings.showStatus !== false, (await getAppStates()).get(appId));
+    const sgdbApiKey = settings.sgdbApiKey;
 
-    // While updating, the amber ring fills to the download's progress and the percentage is written
-    // along the top, kept moving every second by the clock.
     const fraction = badge === "updating" ? await getDownloadFraction(appId) : undefined;
     const percent = fraction === undefined ? undefined : Math.round(fraction * 100);
     if (badge === "updating") {
       this.#downloads.set(target.id, target);
     }
 
-    const label = settings.showTitle === true ? (name ?? `App ${appId}`) : "";
-    const signature = `${appId}:${style}:${fit}:${badge}:${percent ?? "-"}:${label}:${settings.titleIsOurs === true}`;
-
-    if (this.#drawn.get(target.id) !== signature) {
-      const image = await renderKeyImage(appId, style, fit, badge, fraction);
-
-      // The name is drawn into the image. A title is only ever cleared when it is one an earlier
-      // version wrote, never one the user typed.
-      if (percent !== undefined && image !== undefined) {
-        await target.setImage(
-          renderCaption(image, {
-            main: String(percent),
-            suffix: "%",
-            top: true,
-            framed: true,
-            ...(label === "" ? {} : { label: drawnLines(label) }),
-          }),
-        );
-        if (settings.titleIsOurs === true) {
-          await target.setTitle("");
-        }
-      } else {
-        await paintKey(target, image, label, "launch", { clearTitle: settings.titleIsOurs === true });
-      }
-
-      this.#drawn.set(target.id, signature);
-    }
-    updated.titleIsOurs = false;
-
-    // Written once, and only when something actually changed, so this can never loop.
-    if (updated.gameName !== settings.gameName || updated.titleIsOurs !== settings.titleIsOurs) {
-      await target.setSettings(updated);
-    }
-  }
-}
+    const label = settings.show
