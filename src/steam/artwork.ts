@@ -1,3 +1,4 @@
+// src/steam/artwork.ts
 import streamDeck from "@elgato/streamdeck";
 import jpegCodec from "@jimp/js-jpeg";
 import pngCodec from "@jimp/js-png";
@@ -26,33 +27,19 @@ export type ArtStyle = OfficialArtStyle | SteamGridDbArtType;
 
 /**
  * How the art is fitted into the square key.
- *
- * - `fill` crops the art to the key, edge to edge.
- * - `fit`  shows all of it over a blurred, dimmed copy of itself.
  */
 export type ArtFit = "fill" | "fit";
 
-/** Stream Deck keys top out at 144x144 (72pt @2x), which is what every model scales from. */
+export type AvatarEffect = "none" | "glow" | "pulse" | "dim" | "grey" | "faded";
+
 const KEY_SIZE = 144;
 
-/**
- * Dimensions of a render target, in pixels.
- */
 export type Size = { readonly w: number; readonly h: number };
 
-/** The square every key scales from. */
 const KEY: Size = { w: KEY_SIZE, h: KEY_SIZE };
-
-/** JPEG rather than PNG: the composite is always opaque, and it cuts the payload ~7x. */
 const JPEG_QUALITY = 90;
-
-/** Colour behind art that has no usable backdrop, matches Steam's own dark chrome. */
 const FALLBACK_BACKDROP = 0x0f1419ff;
 
-/**
- * A single layer of source art. Steam names the same asset differently across client versions, so
- * each kind lists every filename worth trying, best quality first.
- */
 const SOURCES = {
   capsule: ["library_600x900_2x.jpg", "library_600x900.jpg", "library_capsule.jpg"],
   header: ["header.jpg", "library_header.jpg", "capsule_616x353.jpg"],
@@ -91,13 +78,12 @@ function blank(color: number, size: Size = KEY): Image {
 
 const rendered = new Map<string, string>();
 const inFlight = new Map<string, Promise<string | undefined>>();
-
 const MAX_CACHED_RENDERS = 160;
 
-const STATUS_COLOURS = {
+const STATUS_COLOURS: Record<Exclude<StatusBadge, "idle" | "missing">, readonly number[]> = {
   running: [0x35, 0x9b, 0x43],
   updating: [0xf5, 0xa6, 0x23],
-} as const satisfies Record<Exclude<StatusBadge, "idle" | "missing">, readonly [number, number, number]>;
+};
 
 const BORDER_WIDTH = 11;
 const TRACK_BRIGHTNESS = 0.3;
@@ -152,9 +138,6 @@ async function renderSized(
   return image;
 }
 
-/**
- * Backwards-compatible `renderKeyImage` supporting both the legacy 5-argument call and the new 7-argument call.
- */
 export function renderKeyImage(
   appId: string,
   styleOrSource: ArtStyle | ArtSource = "header",
@@ -164,7 +147,6 @@ export function renderKeyImage(
   progress?: number,
   sgdbApiKey?: string,
 ): Promise<string | undefined> {
-  // Handle overloaded signatures gracefully
   let artSource: ArtSource = "official";
   let style: ArtStyle = "header";
   let fit: ArtFit = "fill";
@@ -175,14 +157,14 @@ export function renderKeyImage(
   if (styleOrSource === "official" || styleOrSource === "steamgriddb") {
     artSource = styleOrSource;
     style = (fitOrStyle as ArtStyle) || "header";
-    fit = (badgeOrFit as ArtFit) || "fill";
+    fit = "fill";
     badge = (progressOrBadge as StatusBadge) || "idle";
     prog = progress;
     apiKey = sgdbApiKey;
   } else {
     artSource = "official";
     style = (styleOrSource as ArtStyle) || "header";
-    fit = (fitOrStyle as ArtFit) || "fill";
+    fit = "fill";
     badge = (badgeOrFit as StatusBadge) || "idle";
     prog = progressOrBadge as number;
   }
@@ -190,9 +172,6 @@ export function renderKeyImage(
   return renderSized(appId, artSource, style, fit, badge, KEY, prog, apiKey);
 }
 
-/**
- * Backwards-compatible `renderStripImage`.
- */
 export function renderStripImage(
   appId: string,
   styleOrSource: ArtStyle | ArtSource = "header",
@@ -213,7 +192,7 @@ export function renderStripImage(
   if (styleOrSource === "official" || styleOrSource === "steamgriddb") {
     artSource = styleOrSource;
     style = (fitOrStyle as ArtStyle) || "header";
-    fit = (sizeOrBadge as unknown as ArtFit) || "fill";
+    fit = "fill";
     size = KEY;
     badge = (badgeOrProgress as StatusBadge) || "idle";
     prog = progress;
@@ -221,13 +200,79 @@ export function renderStripImage(
   } else {
     artSource = "official";
     style = (styleOrSource as ArtStyle) || "header";
-    fit = (fitOrStyle as ArtFit) || "fill";
-    size = typeof sizeOrBadge === "object" ? sizeOrBadge : KEY;
+    fit = "fill";
+    size = typeof sizeOrBadge === "object" && sizeOrBadge !== null ? sizeOrBadge : KEY;
     badge = typeof badgeOrProgress === "string" ? badgeOrProgress : "idle";
     prog = typeof badgeOrProgress === "number" ? badgeOrProgress : progress;
   }
 
   return renderSized(appId, artSource, style, fit, badge, size, prog, apiKey);
+}
+
+export async function renderAchievementKey(
+  appId: string,
+  iconBufferOrUrl?: Buffer | string,
+): Promise<string | undefined> {
+  if (!iconBufferOrUrl) {
+    return renderKeyImage(appId, "header", "fill", "idle");
+  }
+
+  let buffer: Buffer | undefined;
+
+  if (typeof iconBufferOrUrl === "string") {
+    try {
+      if (iconBufferOrUrl.startsWith("http://") || iconBufferOrUrl.startsWith("https://")) {
+        const res = await fetch(iconBufferOrUrl);
+        if (res.ok) {
+          buffer = Buffer.from(await res.arrayBuffer());
+        }
+      } else {
+        buffer = await readFile(iconBufferOrUrl);
+      }
+    } catch {
+      buffer = undefined;
+    }
+  } else {
+    buffer = iconBufferOrUrl;
+  }
+
+  if (!buffer) {
+    return renderKeyImage(appId, "header", "fill", "idle");
+  }
+
+  const decoded = decode(buffer).cover({ w: KEY_SIZE, h: KEY_SIZE });
+  return toDataUri(decoded, `achievement-${appId}`);
+}
+
+export async function renderAvatarKey(input?: Buffer | string | { avatar?: Buffer | string; frame?: Buffer | string; effect?: AvatarEffect | string }): Promise<string> {
+  let bufferOrPath: Buffer | string | undefined;
+  if (input && typeof input === "object" && !Buffer.isBuffer(input)) {
+    bufferOrPath = input.avatar ?? input.frame;
+  } else {
+    bufferOrPath = input as Buffer | string | undefined;
+  }
+
+  if (!bufferOrPath) {
+    return toDataUri(blank(FALLBACK_BACKDROP), "avatar-empty");
+  }
+
+  let buffer: Buffer | undefined;
+  if (typeof bufferOrPath === "string") {
+    try {
+      buffer = await readFile(bufferOrPath);
+    } catch {
+      buffer = undefined;
+    }
+  } else {
+    buffer = bufferOrPath;
+  }
+
+  if (!buffer) {
+    return toDataUri(blank(FALLBACK_BACKDROP), "avatar-empty");
+  }
+
+  const decoded = decode(buffer).cover({ w: KEY_SIZE, h: KEY_SIZE });
+  return toDataUri(decoded, "avatar-user");
 }
 
 export function clearRenderCache(): void {
@@ -380,7 +425,7 @@ function drawLine(runs: readonly TextRun[], baseline: number, dx: number, opacit
       runs
         .map(
           (run) =>
-            `<tspan font-size="${run.size}" font-weight="${run.weight === "bold" ? "bold" : "normal"}" fill="${run.fill}">${escapeXml(run.text)}</tspan>`,
+            `<tspan font-size="${run.size}" font-weight="${run.weight === "bold" ? "bold" : "normal"}" fill="${run.fill}">${escapeXml(run.text)}</tspan>`
         )
         .join("") +
       `</text>`
@@ -512,17 +557,19 @@ async function compose(
 }
 
 function outline(image: Image, badge: StatusBadge, progress?: number): Image {
-  if (badge === "missing") {
-    return markMissing(image);
-  }
-
-  const [r, g, b] = STATUS_COLOURS[badge] ?? [0, 0, 0];
-  if (badge === "idle") {
+  if (badge === "missing" || badge === "idle") {
+    if (badge === "missing") {
+      return markMissing(image);
+    }
     return image;
   }
 
+  const color = STATUS_COLOURS[badge] ?? [0, 0, 0];
+  const r = color[0] ?? 0;
+  const g = color[1] ?? 0;
+  const b = color[2] ?? 0;
+
   const { data, width, height } = image.bitmap;
-  const innerRadius = BORDER_INNER_RADIUS;
   const cx = width / 2;
   const cy = height / 2;
 
@@ -628,7 +675,8 @@ async function loadFirst(appId: string, kinds: readonly ArtKind[]): Promise<Buff
 
 async function libraryCacheDir(appId: string): Promise<string> {
   const steam = await findSteam();
-  const dir = path.join(steam, "appcache", "librarycache", appId);
+  const steamRoot = typeof steam === "string" ? steam : steam?.root ?? "";
+  const dir = path.join(steamRoot, "appcache", "librarycache", appId);
   await mkdir(dir, { recursive: true }).catch(() => {});
   return dir;
 }

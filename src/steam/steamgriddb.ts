@@ -1,5 +1,4 @@
 // src/steam/steamgriddb.ts
-import fetch from "node-fetch";
 
 export type SteamGridDbArtType = "grid_square" | "grid_vertical" | "grid_horizontal" | "hero" | "logo" | "icon";
 
@@ -9,7 +8,7 @@ interface SgdbResponse {
 }
 
 /**
- * Fetches artwork bytes directly from SteamGridDB v2 API.
+ * Fetches artwork bytes directly from SteamGridDB v2 API using native global fetch.
  */
 export async function fetchSteamGridDbArtwork(appId: string, artType: SteamGridDbArtType, apiKey: string): Promise<Buffer | undefined> {
   if (!apiKey || !apiKey.trim()) return undefined;
