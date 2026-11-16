@@ -33,13 +33,22 @@
       >.
     </p>
 
+    <!-- Art Source Toggle -->
+    <sdpi-item label="Art Source">
+      <sdpi-select setting="artSource" default="official" id="artSourceSelect">
+        <option value="official">Official Steam</option>
+        <option value="steamgriddb">SteamGridDB</option>
+      </sdpi-select>
+    </sdpi-item>
+
+    <!-- SteamGridDB API Key (Shown only when SteamGridDB is selected) -->
+    <sdpi-item label="SGDB API Key" id="sgdbKeyRow" style="display: none;">
+      <sdpi-textfield setting="sgdbApiKey" placeholder="Enter SteamGridDB API Key" type="password"></sdpi-textfield>
+    </sdpi-item>
+
     <sdpi-item label="Image">
-      <sdpi-select setting="artStyle" default="logo">
-        <option value="logo">Logo on background</option>
-        <option value="capsule">Vertical capsule</option>
-        <option value="header">Banner</option>
-        <option value="hero">Wide background</option>
-        <option value="none">No image</option>
+      <sdpi-select setting="artStyle" default="logo" id="artStyleSelect">
+        <!-- Populated dynamically based on artSource -->
       </sdpi-select>
     </sdpi-item>
 
@@ -103,9 +112,72 @@
     <script>
       (() => {
         const status = document.getElementById("status");
+        const artSourceSelect = document.getElementById("artSourceSelect");
+        const sgdbKeyRow = document.getElementById("sgdbKeyRow");
+        const artStyleSelect = document.getElementById("artStyleSelect");
 
-        // The plugin sends this straight after the game list, so "no games" can be told
-        // apart from "no Steam" without digging through the logs.
+        const ART_OPTIONS = {
+          official: [
+            { value: "logo", label: "Logo on background" },
+            { value: "capsule", label: "Vertical capsule" },
+            { value: "header", label: "Banner" },
+            { value: "hero", label: "Wide background" },
+            { value: "none", label: "No image" }
+          ],
+          steamgriddb: [
+            { value: "grid_square", label: "SGDB Square Grid (1:1)" },
+            { value: "grid_vertical", label: "SGDB Vertical Grid (600x900)" },
+            { value: "grid_horizontal", label: "SGDB Horizontal Grid" },
+            { value: "hero", label: "SGDB Hero Banner" },
+            { value: "logo", label: "SGDB Transparent Logo" },
+            { value: "icon", label: "SGDB Icon" }
+          ]
+        };
+
+        function updateDropdownAndVisibility(source, currentStyle) {
+          const isSgdb = source === "steamgriddb";
+          sgdbKeyRow.style.display = isSgdb ? "flex" : "none";
+
+          const options = ART_OPTIONS[source] || ART_OPTIONS.official;
+          artStyleSelect.innerHTML = "";
+          
+          let found = false;
+          options.forEach(opt => {
+            const optionEl = document.createElement("option");
+            optionEl.value = opt.value;
+            optionEl.textContent = opt.label;
+            if (opt.value === currentStyle) {
+              optionEl.selected = true;
+              found = true;
+            }
+            artStyleSelect.appendChild(optionEl);
+          });
+
+          if (!found && options.length > 0) {
+            artStyleSelect.value = options[0].value;
+          }
+        }
+
+        // Listen for settings updates from Stream Deck SDK components
+        SDPIComponents.streamDeckClient.didReceiveSettings.subscribe((ev) => {
+          const settings = ev.payload?.settings ?? {};
+          const source = settings.artSource || "official";
+          const style = settings.artStyle || "logo";
+          
+          if (artSourceSelect.value !== source) {
+            artSourceSelect.value = source;
+          }
+          updateDropdownAndVisibility(source, style);
+        });
+
+        // Watch for user toggling the source dropdown
+        artSourceSelect.addEventListener("change", (e) => {
+          const source = artSourceSelect.value;
+          const defaultStyle = source === "steamgriddb" ? "grid_square" : "logo";
+          updateDropdownAndVisibility(source, defaultStyle);
+        });
+
+        // Status message subscription
         SDPIComponents.streamDeckClient.sendToPropertyInspector.subscribe((ev) => {
           const payload = ev.payload ?? {};
           if (payload.event === "status") {
